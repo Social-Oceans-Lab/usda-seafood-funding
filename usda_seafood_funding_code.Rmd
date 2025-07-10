@@ -1,0 +1,339 @@
+---
+title: "usda-seafood-funding"
+author: "Prepared by Sahir Advani, Tolulope Oyikeke, Joshua Stoll, Social Oceans Lab, University of Maine"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyr)
+library(dplyr)
+library(janitor)
+library(forcats)
+library(lubridate)
+library(ggplot2)
+library(here)
+library(stringr)
+library(DT)
+#library(knitr)
+#library(kableExtra)
+library(sf)
+library(patchwork)
+library(waffle)
+library(scales)
+library(usmap)
+```
+
+## Obtain Open Access Database
+
+The database linked below is hosted on Open Science Framework and can also be accessed and downloaded from: [DOI 10.17605/OSF.IO/NTWGC](https://osf.io/ntwgc/). Note it is a large file (67Mb) with 195,367 rows and 14 columns, so the URL may take a little time to download.
+
+```{r data-url}
+USDA_data <- read.csv("https://osf.io/zs39d/download", header = TRUE, na.strings = c("","NA"))
+
+#Remove 12 grant programs with insufficient information
+USDA_data_refined <- USDA_data %>%
+  filter(!is.na(seafood_presence))
+```
+
+## Data Exploration
+
+Available Data on USDA Grant Programs is described based on the various columns in the database
+
+-   agency: USDA agencies
+
+-   program_area: Programmatic area of grant funding
+
+-   program: Grant programs nested within USDA agencies and Program Areas
+
+-   cfda_number: [Catalog of Federal Domestic Assistance](https://sam.gov/content/assistance-listings) number. Assigned to most grants funded by the Federal government
+
+-   award_year: Year grant was awarded
+
+-   state: State grantee is located in
+
+-   grant_amount: USD $ amount
+
+-   recipient_name: Grant recipient name
+
+-   project_title: Title of project receiving grant
+
+-   project_description: Description of project
+
+-   seafood_presence: indicates if there's a valid mention of seafood (TRUE, FALSE, NA)
+
+-   wild_aqua: describes if the seafood mentioned is related to wild-capture fisheries (wild), aquaculture and aquaculture research (aqua), and seafood systems and educational training in general (seafood).
+
+-   value_chain: If seafood_presence is TRUE, then description of which part of value chain the project is associated with. Categories include: production; processing; aggregation & distribution; marketing; and technical assistance, education, outreach. 
+
+-   business_type: If seafood_presence is TRUE, then description of which type of business is being funded - seafood business, cooperative, native american tribal government, non-profit, school district, state government, university
+
+### Table 1
+List of USDA agencies, grant programs, number of grants awarded (2018–2023), and Total Dollar Amounts (2018-2023)
+```{r data-summary-table}
+
+USDA_data_summary <- USDA_data_refined %>% 
+  filter(award_year >= 2018) %>% 
+   filter(award_year != 2024) %>% 
+  group_by(agency, program) %>% 
+  summarize("Number of Awards" = n(),
+            Dollars = sum(grant_amount, na.rm = TRUE)) %>% 
+  mutate(Dollars = scales::dollar(Dollars, largest_with_cents = 0))
+
+#This table provides a summary of the various grants funded within USDA's major grant programs for the last five years.
+
+DT::datatable(USDA_data_summary)
+
+```
+
+## USDA Grant Funding 
+### Figure 1
+(A) Number of USDA grants and (B) total grant amount ($) by agency (2018–2023).
+```{r fig-1}
+
+f1_a <- USDA_data_refined %>%  
+  filter(award_year >= 2018) %>% 
+  filter(award_year != 2024) %>% 
+  ggplot(aes(x=award_year, fill = agency)) +
+  geom_bar(position="stack", width = 0.7) +
+  scale_fill_viridis_d(name = "Agency", labels = c("AMS", "FNS", "NIFA", "RD"), option = "D", direction = -1, alpha = 0.8) + 
+  labs(title = "", x = "Year", y = "Number of Grants", fill = "Agency") +
+  theme_minimal() +
+  scale_x_continuous(breaks = seq(2018, 2024, 1))+
+  scale_y_continuous(expand = c(0, 0), labels = scales::label_number(scale_cut = cut_short_scale())) +
+theme(legend.position = "bottom", legend.box = "vertical", legend.margin = margin(), axis.line = element_line(), axis.ticks.x = element_blank(),
+      axis.text.x = element_text(angle = 0, hjust = 0.5), panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank(), axis.ticks.y = element_line())  +
+  guides(fill = guide_legend(nrow =1, byrow=TRUE))
+
+f1_b <- USDA_data_refined %>%  
+  filter(award_year >= 2018) %>% 
+  filter(award_year != 2024) %>% 
+  group_by(award_year, agency) %>%
+  summarize(Number = n(), Total = sum(grant_amount, na.rm = T)) %>%
+  ggplot(aes(x=award_year, y = Total, fill = agency)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  scale_fill_viridis_d(name = "Agency", labels = c("AMS", "FNS", "NIFA", "RD"), option = "D", direction = -1, alpha = 0.8) + 
+  labs(title = "", x = "Year", y = "Total Grant Amount ($)", fill = "Agency") +
+  theme_minimal() +
+  scale_x_continuous(breaks = seq(2018, 2024, 1))+
+  scale_y_continuous(expand = c(0, 0), labels = scales::label_number(scale_cut = cut_short_scale())) +
+theme(legend.position = "bottom", legend.box = "vertical", legend.margin = margin(), axis.line = element_line(), axis.ticks.x = element_blank(),
+      axis.text.x = element_text(angle = 0, hjust = 0.5), panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank(), axis.ticks.y = element_line())  +
+  guides(fill = guide_legend(nrow =1, byrow=TRUE))
+
+fig_1 <- f1_a + f1_b + plot_layout(guides = "collect") & theme(legend.position = 'bottom') & plot_annotation(tag_levels = 'A') 
+
+```
+
+## Seafood Support
+### Table 2
+USDA grants supporting fisheries and aquaculture relative to other sectors of the food system (2018–2023).
+```{r table 2}
+
+seafood_support <- USDA_data_refined %>% 
+  group_by(seafood_presence, agency) %>% 
+  summarize("Number of Awards" = n(),
+            Dollars = sum(grant_amount,na.rm = TRUE)) %>% 
+  mutate(Dollars = scales::dollar(Dollars, largest_with_cents = 0, scale_cut = cut_long_scale())) %>% 
+  rename("Seafood Supported" = "seafood_presence",
+         "Agency" = "agency")
+
+seafood_support %>% pivot_wider(id_cols = "Agency", 
+names_from = "Seafood Supported", values_from = c("Number of Awards", "Dollars"), 
+names_glue = "{.value}_{.name}") %>% rename("Other grants (n=145,952)" = "Number of Awards_Number of Awards_FALSE",
+"Seafood-focused grants (n=768)" = "Number of Awards_Number of Awards_TRUE" , 
+"Amount(Million USD)" = "Dollars_Dollars_FALSE" ,
+"Amount (Million USD)" = "Dollars_Dollars_TRUE" ) %>% 
+select('Agency','Seafood-focused grants (n=768)', 'Amount (Million USD)', 'Other grants (n=145,952)',  'Amount(Million USD)') %>% 
+knitr::kable(format = "markdown", align = c("l", "r", "r", "r", "r"), padding = 0, border = "all")
+```
+### Figure 2
+Heatmap of total value ($) of grants by agency and overall for each year comparing grants funding seafood projects versus other types of projects (2018–2023). Log-transformed US Dollar amounts for comparability.
+
+```{r fig-2}
+
+f2_data <- USDA_data_refined %>%
+  mutate(agency = factor(agency, levels = c("Agricultural Marketing Service", "Food and Nutrition Service", "National Institute of Food and Agriculture", "Rural Development"),
+         labels = c("AMS", "FNS", "NIFA", "RD"))) %>% 
+  group_by(seafood_presence, award_year, agency) %>%
+  summarize(Number = n(),Total = sum(grant_amount, na.rm = T))
+
+f2_tot <- f2_v2 %>% 
+  group_by(award_year, seafood_presence) %>% 
+  summarise(Total = sum(Total), .groups = 'drop') %>% 
+  mutate(agency = "USDA Total")
+
+f2_combo <- bind_rows(f2_v2, f2_v2_sum) %>% 
+  mutate(seafood_label = ifelse(seafood_presence, "Seafood Funded", "Seafood Not Funded"))
+
+fig_2 <- ggplot(f2_combo, aes(x = factor(award_year), y = fct_rev(factor(agency)), fill = Total)) +
+  geom_tile(color = "white") +
+  facet_wrap(~ seafood_label, nrow = 1) +
+  scale_fill_viridis_c(trans = "log10", labels =scales::label_dollar(scale_cut = cut_short_scale())) +
+  labs(x = "Year", y = "Agency", title= "", fill = "Total Dollars\n(Log-scale)") +
+  theme_minimal()
+```
+
+### Figure 3
+Maps showing (A) Number of USDA grants and (B) total grant amount (USD) for seafood-related projects by state (2018–2023). States in grey have no grant programs that directly support seafood.
+```{r fig-3}
+
+USDA_data_map <- USDA_data_refined %>% 
+  group_by(state) %>% 
+  summarise(Grant_amount_dollar = sum(ifelse(seafood_presence == TRUE, grant_amount, NA), na.rm = T),
+    Seafood_grant = sum(seafood_presence == TRUE)
+  ) %>% 
+  mutate(Seafood_grant = na_if(Seafood_grant, 0)) %>% 
+  mutate(Grant_amount_dollar = na_if(Grant_amount_dollar, 0)) %>% 
+  mutate(state = str_to_title(state)) %>% 
+  mutate(across('state', str_replace, 'District Of Columbia', 'District of Columbia')) %>% 
+  left_join(us_map(regions = "states"), by = c('state' = 'full'))
+
+
+f3_a <- plot_usmap(data = USDA_data_map, values = "Seafood_grant", labels = TRUE, label_color = "grey90") +
+  scale_fill_viridis_b(name = "Number of Grants", option = "C", n.breaks = 6, alpha = 0.8) +
+  theme(legend.position = "right")
+
+f3_b <- plot_usmap(data = USDA_data_map, values = "Grant_amount_dollar", labels = TRUE, label_color = "grey90") +
+  scale_fill_viridis_b(, name = "Grant Amount", option = "C", n.breaks = 8, labels = scales::label_dollar(scale_cut = cut_short_scale()), alpha = 0.8) +
+  theme(legend.position = "right")
+
+fig_3 <- f3_a / f3_b + plot_annotation(tag_levels = 'A')
+
+fig_3
+```
+
+### Figure 4
+Number of (A) grants and (B) funding (USD) for wild capture fisheries, aquaculture, and general seafood.
+```{r fig-4}
+
+USDA_data_aqua_wild <- USDA_data_refined %>%
+  filter(seafood_presence == TRUE) %>%
+  select(award_year, wild_aqua, grant_amount) %>%
+  group_by(award_year, wild_aqua) %>%
+  summarize(total_grant_amount = sum(grant_amount, na.rm = TRUE),
+            no_of_grant = n())
+
+custom_labels <- c("aqua" = "Aquaculture", "seafood" = "General seafood", "wild" = "Wild-caught")
+
+
+f4_a <- ggplot(USDA_data_aqua_wild, 
+             aes(x = award_year, y = total_grant_amount, fill = wild_aqua)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  scale_x_continuous(breaks = seq(2018, 2023, 1))+
+  scale_y_continuous(expand = c(0,0), labels = scales::label_dollar(scale_cut = cut_short_scale())) +
+  scale_fill_viridis_d(name = "Category", labels = custom_labels, option = "D", direction = 1) +
+  labs(title = "",
+       x = "Year",
+       y = "Total Grant Amount",
+       color = "Category", 
+       size = "Number of Grants") +  
+  theme_minimal() +
+  theme(legend.position = "bottom", legend.box = "horizontal", legend.margin = margin(), axis.line = element_line(), axis.ticks.x = element_blank(),
+        axis.text.x = element_text(angle = 0, hjust = 0.5), panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank(), axis.ticks.y = element_line())  +
+  guides(fill = guide_legend(nrow = 1, byrow = TRUE))
+
+
+f4_b <- ggplot(USDA_data_aqua_wild, 
+             aes(x = award_year, y = no_of_grant, fill = wild_aqua)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  scale_x_continuous(breaks = seq(2018, 2023, 1))+
+  scale_y_continuous(expand = c(0,0)) +
+  scale_fill_viridis_d(name = "Category", labels = custom_labels, option = "D") +
+  labs(title = "",
+       x = "Year",
+       y = "Number of Grants",
+       color = "Category", 
+       size = "Number of Grants") +  
+  theme_minimal() +
+  theme(legend.position = "bottom", legend.box = "horizontal", legend.margin = margin(), axis.line = element_line(), axis.ticks.x = element_blank(),
+        axis.text.x = element_text(angle = 0, hjust = 0.5), panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank(), axis.ticks.y = element_line())  +
+  guides(fill = guide_legend(nrow = 1, byrow = TRUE))
+  
+  
+fig_4 <- f4_a + f4_b + plot_layout(guides = "collect") & theme(legend.position = 'bottom') & plot_annotation(tag_levels = 'A')
+```
+
+### Figure 5
+Number of seafood-related grants by supply chain segment and USDA agency.
+```{r fig-5}
+supply_chain <- USDA_data_refined %>% 
+  filter(seafood_presence == "TRUE") %>% 
+  mutate(value_chain = factor(value_chain,
+          levels = c("production","processing", "aggregation & distribution", "marketing", "technical assistance, education, outreach"),
+          labels = c("Production", "Processing", "Aggregation & Distribution", "Marketing", "Technical Assistance, Education, & Outreach"))) %>% 
+  group_by(seafood_presence, 
+           #agency, 
+           value_chain) %>% 
+  summarize(Number = n(),
+            'Total Dollar Value' = sum(grant_amount, na.rm = TRUE))
+
+fig_5 <- USDA_data_refined %>% 
+  mutate(value_chain = factor(value_chain,
+          levels = c("production","processing", "aggregation & distribution", "marketing", "technical assistance, education, outreach"),
+          labels = c("Production", "Processing", "Aggregation & Distribution", "Marketing", "Technical Assistance, Education, & Outreach"))) %>% 
+  group_by(seafood_presence, agency, value_chain) %>% 
+  summarize(Number = n(),
+            'Total Dollar Value' = sum(grant_amount), na.rm = TRUE) %>% 
+  filter(seafood_presence == "TRUE") %>% 
+  ggplot(aes(x = value_chain, y = Number, fill = agency)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  labs(x = "Supply Chain Segment", y = "Number of Grants Awarded", title= "", fill = "Agency") +
+   scale_fill_viridis_d(name = "Agency", labels = c("AMS", "FNS", "NIFA", "RD"), option = "D", direction = -1, alpha = 0.8) + 
+ # scale_fill_manual(labels = c("Agricultural Marketing Service", "Food and Nutrition Service", "National Institute of Food and Agriculture", "Rural Development"), values = c("#3333FF", "#33CC33", "#CC6666", "#FF8533")) +
+  #facet_wrap(.~ agency, scales = "free") +
+  theme_minimal() +
+  scale_x_discrete(labels = label_wrap(30)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  guides(fill = guide_legend(nrow = 1, position = "inside"), byrow=TRUE) +
+  theme(legend.position.inside = c(0.6, 0.6), legend.box = "vertical", legend.margin = margin(), axis.line = element_line(), axis.ticks.x = element_blank(),
+        panel.grid.major.x = element_blank(), panel.grid.minor.x = element_blank()) +
+  coord_flip()
+
+fig_5
+
+```
+
+### Figure 6
+Number of seafood-related projects funded based on organizational type. Each line represents one grant.
+```{r fig-6}
+
+agency_tot <- USDA_data_refined %>% 
+  filter(seafood_presence == "TRUE") %>% 
+   mutate(agency = factor(agency, levels = c("Food and Nutrition Service", "Rural Development", "Agricultural Marketing Service", "National Institute of Food and Agriculture"),
+         labels = c("FNS", "RD", "AMS", "NIFA"))) %>% 
+  group_by(agency) %>% 
+  summarize(
+    total = n(),
+    max_height = ceiling(total/5)
+  ) %>% 
+  mutate(tot_lab = paste0("N = ", total))
+
+fig_6 <- USDA_data_refined %>% 
+  mutate(business_type = factor(business_type), levels = rev(business_type)) %>% 
+  mutate(agency = factor(agency, levels = c("National Institute of Food and Agriculture", "Agricultural Marketing Service", "Rural Development", "Food and Nutrition Service"),
+         labels = c("NIFA", "AMS", "RD", "FNS"))) %>% 
+  group_by(seafood_presence, agency, business_type) %>% 
+  summarize(Number = n(),
+            'Total Dollar Value' = sum(grant_amount), na.rm = TRUE) %>% 
+  filter(seafood_presence == "TRUE") %>%
+  ggplot(aes(fill = business_type, values=Number)) +
+  geom_waffle(color = "white", size = .50, n_rows = 5, flip = TRUE, reverse = FALSE) +
+  facet_wrap(agency~., nrow=1, strip.position = "bottom") +
+  scale_y_continuous(labels = function(x) x * 5, expand = c(0,0),
+                     limits = c(0, 85)) + #400/5 +
+    scale_fill_manual(values = c("#4682B4", "#404080", "#FFD700", "#FFA07A", "#FF6347", "#69B3A2", "#6A5ACD"),
+                    guide = guide_legend(reverse = TRUE, position = "inside")) + 
+  labs(fill = "Grantee Type", x=NULL, y = NULL) +
+  geom_text(data = agency_tot,
+            aes(x=3, y = max_height+2, label = tot_lab),
+            inherit.aes = FALSE) +
+  theme_minimal() +
+  theme(panel.grid = element_blank(),
+        axis.ticks.y = element_line(),
+        axis.text.x = element_blank(),
+        axis.line.y = element_line(),
+        legend.position.inside = c(0.8, 0.7))
+
+fig_6
+
+```
